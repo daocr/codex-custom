@@ -10,9 +10,9 @@ concurrency:
 jobs:
   build-and-release:
     name: Build and release x86_64-apple-darwin
-    # Cross-build the Intel target on the larger Apple Silicon runner. This is
-    # the same target/runner pairing used by the repository's release workflow.
-    runs-on: macos-15-xlarge
+    # Cross-build the Intel target on a standard Apple Silicon runner. The
+    # larger runner label is not available to this fork's Actions quota.
+    runs-on: macos-15
     timeout-minutes: 120
     permissions:
       contents: write
