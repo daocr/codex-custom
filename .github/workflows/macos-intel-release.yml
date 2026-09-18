@@ -33,6 +33,7 @@ jobs:
           targets: ${{ env.TARGET }}
 
       - name: Restore Cargo and release build cache
+        id: cargo_cache
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
@@ -40,9 +41,35 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             ${{ env.CARGO_TARGET_DIR }}
+            /tmp/codex-package/
           key: macos-intel-cargo-${{ env.TARGET }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
           restore-keys: |
             macos-intel-cargo-${{ env.TARGET }}-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+          version: 0.7.5
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
+          fi
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          sccache --start-server
+
+      - name: Report cache status
+        shell: bash
+        run: |
+          echo "Cargo cache hit: ${{ steps.cargo_cache.outputs.cache-hit }}"
+          sccache --show-stats || true
 
       - name: Build complete Codex CLI package
         shell: bash
