@@ -1,0 +1,154 @@
+name: macOS Intel CLI release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build and release x86_64-apple-darwin
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      TARGET: x86_64-apple-darwin
+      ARCHIVE: codex-package-x86_64-apple-darwin.tar.gz
+      CARGO_INCREMENTAL: "0"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build complete Codex CLI package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          just assemble-codex-package \
+            --target "$TARGET" \
+            --cargo-profile release \
+            --package-dir "dist/codex-package-$TARGET" \
+            --archive-output "dist/$ARCHIVE" \
+            --force
+
+      - name: Verify package and Intel architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="dist/codex-package-$TARGET"
+
+          python3 - "$package_dir/codex-package.json" "$TARGET" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          metadata = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = {
+              "target": sys.argv[2],
+              "variant": "codex",
+              "entrypoint": "bin/codex",
+          }
+          actual = {key: metadata.get(key) for key in expected}
+          if actual != expected:
+              raise SystemExit(f"unexpected package metadata: {actual!r}")
+          PY
+
+          executables=(
+            "$package_dir/bin/codex"
+            "$package_dir/bin/codex-code-mode-host"
+            "$package_dir/codex-path/rg"
+            "$package_dir/codex-resources/zsh/bin/zsh"
+          )
+          for executable in "${executables[@]}"; do
+            test -x "$executable"
+            file "$executable"
+            archs="$(lipo -archs "$executable")"
+            if [[ "$archs" != "x86_64" ]]; then
+              echo "Expected x86_64 executable, found '$archs': $executable" >&2
+              exit 1
+            fi
+          done
+
+          "$package_dir/bin/codex" --version
+          tar -tzf "dist/$ARCHIVE" >/dev/null
+          (cd dist && shasum -a 256 "$ARCHIVE" >"$ARCHIVE.sha256")
+
+      - name: Prepare release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA:0:12}"
+          release_tag="macos-intel-$short_sha"
+          echo "short_sha=$short_sha" >>"$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >>"$GITHUB_OUTPUT"
+
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          printf '# Codex CLI for macOS Intel\n\n' >"$notes_file"
+          printf 'Built from commit `%s` for target `%s`.\n\n' \
+            "$GITHUB_SHA" "$TARGET" >>"$notes_file"
+          cat >>"$notes_file" <<'EOF'
+          This package is unsigned and intended for personal use. Keep the extracted
+          directory intact because Codex uses the bundled helper programs and resources.
+
+          ```bash
+          tar -xzf codex-package-x86_64-apple-darwin.tar.gz
+          sudo mkdir -p /usr/local/lib/codex-custom /usr/local/bin
+          sudo cp -R codex-package-x86_64-apple-darwin/. /usr/local/lib/codex-custom/
+          sudo xattr -dr com.apple.quarantine /usr/local/lib/codex-custom
+          sudo ln -sf /usr/local/lib/codex-custom/bin/codex /usr/local/bin/codex
+          codex --version
+          ```
+
+          Verify the download before installing:
+
+          ```bash
+          shasum -a 256 -c codex-package-x86_64-apple-darwin.tar.gz.sha256
+          ```
+          EOF
+          echo "notes_file=$notes_file" >>"$GITHUB_OUTPUT"
+
+      - name: Create GitHub pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          SHORT_SHA: ${{ steps.release.outputs.short_sha }}
+          NOTES_FILE: ${{ steps.release.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+
+          existing_target="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+              --jq '.object.sha' 2>/dev/null || true
+          )"
+          if [[ -n "$existing_target" && "$existing_target" != "$GITHUB_SHA" ]]; then
+            echo "Tag $RELEASE_TAG points to $existing_target, expected $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Codex CLI macOS Intel ($SHORT_SHA)" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "dist/$ARCHIVE" \
+            "dist/$ARCHIVE.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
