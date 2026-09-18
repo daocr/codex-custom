@@ -30,6 +30,18 @@ jobs:
         with:
           targets: ${{ env.TARGET }}
 
+      - name: Restore Cargo and release build cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ env.CARGO_TARGET_DIR }}
+          key: macos-intel-cargo-${{ env.TARGET }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: |
+            macos-intel-cargo-${{ env.TARGET }}-
+
       - name: Build complete Codex CLI package
         shell: bash
         run: |
