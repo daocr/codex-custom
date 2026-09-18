@@ -143,10 +143,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          existing_target="$(
+          existing_target=""
+          if existing_target="$(
             gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
-              --jq '.object.sha' 2>/dev/null || true
-          )"
+              --jq '.object.sha' 2>/dev/null
+          )"; then
+            :
+          fi
           if [[ -n "$existing_target" && "$existing_target" != "$GITHUB_SHA" ]]; then
             echo "Tag $RELEASE_TAG points to $existing_target, expected $GITHUB_SHA" >&2
             exit 1
